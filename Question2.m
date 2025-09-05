@@ -2,20 +2,14 @@
 % 目标函数：q1_occlusion_time(vx_FY1, vy_FY1, t_throw, t_explode)
 
 clear; clc;
-% 获取当前随机数生成器状态
-current_state = rng;
 
-% 提取并输出随机种子
-current_seed = current_state.Seed;
-fprintf('当前随机种子为：%d\n', current_seed);
 %% 约束与场景参数
 % 速度大小与方位角
 SPEED_MIN = 70; SPEED_MAX = 140; % s ∈ [70,140]
 THETA_MIN = -pi; THETA_MAX = pi; % theta ∈ [-pi, pi]
 
-% von Mises 方向生成参数（指向 x 轴负半轴）
-VM_mu = pi;        % 均值方向：π（指向 -x 方向）
-VM_kappa = 10;      % 浓度参数
+% von Mises 方向生成参数（50% 概率朝前(mu=0)或朝后(mu=pi)）
+VM_kappa = 12;     % 浓度参数（恒定）
 
 % 计算导弹到达目标的时间（t_throw + t_explode 必须小于该时间）
 T_MAX = 20;
@@ -30,12 +24,12 @@ nVar = 4;
 VarMin = [SPEED_MIN, THETA_MIN, 0.0, 0.0];
 VarMax = [SPEED_MAX, THETA_MAX, T_MAX, T_MAX];
 
-nPop = 50;              % 群体规模
+nPop = 100;              % 群体规模
 MaxIt = 120;            % 最大迭代次数
 w = 0.72;               % 惯性权重
 wDamp = 0.99;           % 惯性权重衰减
-c1 = 1.8;               % 个体学习因子
-c2 = 1.8;               % 群体学习因子
+c1 = 2.0;               % 个体学习因子
+c2 = 1.6;               % 群体学习因子
 
 % 速度上限（按搜索区间的一定比例设定）
 VelMax = 0.25 * (VarMax - VarMin);
@@ -53,7 +47,7 @@ empty_particle.Best.Position = [];
 empty_particle.Best.Cost = [];
 empty_particle.Best.Duration = [];
 
-% 初始化群体（theta ~ von Mises(mu=π, kappa=8)）
+% 初始化群体（theta ~ 0.5*VM(mu=0,k=10) + 0.5*VM(mu=pi,k=10)）
 particle = repmat(empty_particle, nPop, 1);
 GlobalBest.Cost = inf;
 GlobalBest.Duration = -inf;
@@ -61,9 +55,15 @@ GlobalBest.Position = [];
 
 for i = 1:nPop
     particle(i).Position = VarMin + rand(1, nVar) .* (VarMax - VarMin);
-    % 用 von Mises 分布采样方位角；速度大小均匀
+    % 速度大小均匀
     particle(i).Position(1) = SPEED_MIN + rand*(SPEED_MAX - SPEED_MIN);         % s
-    particle(i).Position(2) = randVonMises(VM_mu, VM_kappa, 1);                 % theta ∈ [-pi,pi]
+    % 方位角：50% 概率选择 mu=0 或 mu=pi 的冯米塞斯分布
+    if rand < 0.5
+        mu_sample = 0;
+    else
+        mu_sample = pi;
+    end
+    particle(i).Position(2) = randVonMises(mu_sample, VM_kappa, 1);             % theta ∈ [-pi,pi]
     % 强可行修复：保证 t0+t1 <= T_SUM_MAX
     t0i = particle(i).Position(3); t1i = particle(i).Position(4);
     tsum = t0i + t1i;
