@@ -35,7 +35,7 @@ pos_FY3    = [6000,  -3000, 700];
 
 %% 奖赏机制参数（退火）
 REWARD_MAX_ITER_FRAC = 0.5;         % 前50%迭代使用明显奖励
-REWARD_WEIGHT_INIT   = 1;          % 初始奖赏权重
+REWARD_WEIGHT_INIT   = 40;          % 初始奖赏权重
 DIST_SCALE           = 300;          % 距离尺度（m），越小越强调接近导弹轨迹
 
 %% 粒子群参数与搜索边界
@@ -45,11 +45,11 @@ VarMin = [SPEED_MIN, THETA_MIN, 0, 0,  SPEED_MIN, THETA_MIN, 0, 0,  SPEED_MIN, T
 VarMax = [SPEED_MAX, THETA_MAX, T_MAX, T_MAX,  SPEED_MAX, THETA_MAX, T_MAX, T_MAX,  SPEED_MAX, THETA_MAX, T_MAX, T_MAX];
 
 nPop = 150;              % 群体规模
-MaxIt = 50;             % 最大迭代次数
-w = 1.2;                % 惯性权重
+MaxIt = 100;             % 最大迭代次数
+w = 1.2;              % 惯性权重
 wDamp = 0.99;            % 惯性权重衰减
-c1 = 1.6;                % 个体学习因子
-c2 = 2.0;                % 群体学习因子
+c1 = 2.0;                % 个体学习因子
+c2 = 1.6;                % 群体学习因子
 
 % 速度上限（按搜索区间比例）
 VelMax = 0.25 * (VarMax - VarMin);
@@ -89,7 +89,7 @@ for i = 1:nPop
     end
     particle(i).Position(2) = randVonMises(mu_sample, VM_kappa, 1);             % theta ∈ [-pi,pi]
 
-    % FY2的方位角：指向导弹和目标连线中点，k=2.5
+    % FY2的方位角：指向导弹和目标连线中点，k=5
     midpoint = (pos_M1 + pos_target) / 2;  % 导弹和目标连线的中点
     midpoint_direction = midpoint - pos_FY2;
     midpoint_theta = atan2(midpoint_direction(2), midpoint_direction(1));
@@ -129,7 +129,7 @@ end
 BestCost = nan(MaxIt,1); BestDuration = nan(MaxIt,1); BestReward = nan(MaxIt,1);
 
 % 停滞检测（多样性注入）
-stallThreshold = 18; improveTol = 1e-6; stallCounter = 0; prevBestCost = inf;
+stallThreshold = 8; improveTol = 1e-6; stallCounter = 0; prevBestCost = inf;
 
 %% 迭代优化
 for it = 1:MaxIt
@@ -183,21 +183,12 @@ for it = 1:MaxIt
         stallCounter = stallCounter + 1;
     end
     if stallCounter >= stallThreshold
-        numReseed = max(1, round(0.10 * nPop));
+        numReseed = max(1, round(0.50 * nPop));
         costs = [particle.Cost]; [~, idxSorted] = sort(costs, 'descend'); reseedIdx = idxSorted(1:numReseed);
         for k = 1:numReseed
             j = reseedIdx(k); pos = particle(j).Position;
-            % 时间维（t,dt）高斯扰动（标准差按各维度范围的12%）
-            timeIdx = [3,4, 7,8, 11,12];
-            timeRange = VarMax(timeIdx) - VarMin(timeIdx);
-            timeStd = 0.12 * timeRange;
-            pos(timeIdx) = pos(timeIdx) + randn(1,6).*timeStd;
-            pos(timeIdx) = VarMin(timeIdx) + rand(1,6).*(VarMax(timeIdx)-VarMin(timeIdx));
-            % s/theta 高斯扰动
-            thetaStd = deg2rad(20);
-            pos([2,6,10]) = arrayfun(@(th) wrapToPi(th + randn*thetaStd), pos([2,6,10]));
-            sStd = 0.08*(SPEED_MAX-SPEED_MIN);
-            pos([1,5,9]) = min(max(pos([1,5,9]) + randn(1,3)*sStd, SPEED_MIN), SPEED_MAX);
+            % 随机化（均匀重新采样）
+            pos(1:12) = VarMin(1:12) + rand(1,12).*(VarMax(1:12)-VarMin(1:12));
             % 夹紧
             pos = min(max(pos, VarMin), VarMax);
             particle(j).Position = pos;
@@ -267,8 +258,6 @@ pos_throw_3 = pos_FY3 + t3_best * vv3_best;
 pos_bao_3 = pos_throw_3 + dt3_best * vv3_best; 
 pos_bao_3(3) = pos_bao_3(3) - 0.5 * sim_opts.g * (dt3_best^2);
 
-
-s=73.655, th=2.999, t=0.000, dt=2.361
 %% 子函数：目标函数
 function [J, duration, reward, cloud_durations] = objective_q4(x, sim_opts, ...
     v_cloud, r_cloud, r_target, h_target, pos_target, pos_M1, vv_M1, ...
@@ -338,10 +327,27 @@ function [J, duration, reward, cloud_durations] = objective_q4(x, sim_opts, ...
         duration = sum(merged_intervals(:,2) - merged_intervals(:,1));
     end
 
-    % 奖励：云团爆炸点到导弹轨迹的方向一致性（使用Weibull CDF）
-    d1 = point_to_line_distance(pos_bao_1, pos_M1, vv_M1);
-    d2 = point_to_line_distance(pos_bao_2, pos_M1, vv_M1);
-    d3 = point_to_line_distance(pos_bao_3, pos_M1, vv_M1);
+    
+    % 奖励：云团爆炸点到"爆炸时刻下的导弹与真目标连线"的距离（使用Weibull CDF）
+    % 计算爆炸时刻下各导弹位置
+    time_bao_1 = t1 + dt1;
+    time_bao_2 = t2 + dt2;
+    time_bao_3 = t3 + dt3;
+    
+    % 计算各爆炸时刻下导弹位置
+    missile_pos_1 = pos_M1 + time_bao_1 * vv_M1;
+    missile_pos_2 = pos_M1 + time_bao_2 * vv_M1;
+    missile_pos_3 = pos_M1 + time_bao_3 * vv_M1;
+    
+    % 创建导弹-目标连线向量
+    missile_target_vec_1 = pos_target - missile_pos_1;
+    missile_target_vec_2 = pos_target - missile_pos_2;
+    missile_target_vec_3 = pos_target - missile_pos_3;
+    
+    % 计算爆炸点到导弹-目标连线的距离
+    d1 = point_to_line_distance(pos_bao_1, missile_pos_1, missile_target_vec_1);
+    d2 = point_to_line_distance(pos_bao_2, missile_pos_2, missile_target_vec_2);
+    d3 = point_to_line_distance(pos_bao_3, missile_pos_3, missile_target_vec_3);
 
     % 归一化距离（假设最大可能距离为1000m）
     max_possible_dist = 100;  % 根据您的场景调整
@@ -357,8 +363,12 @@ function [J, duration, reward, cloud_durations] = objective_q4(x, sim_opts, ...
     reward_each = exp(-((([normalized_d1, normalized_d2, normalized_d3])/lambda).^k_shape));
     reward = mean(reward_each);
     
-    % 迭代退火权重
-    reward_weight = max(0, reward_init*(1 - it/(reward_frac*MaxIt)));
+    % 迭代退火权重（阶跃式变化）
+    if it <= reward_frac*MaxIt
+        reward_weight = reward_init;
+    else
+        reward_weight = 0;
+    end
 
     % 目标函数（最小化）
     J = -duration - reward_weight*reward;
