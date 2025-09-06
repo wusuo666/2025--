@@ -1,0 +1,1 @@
+[totalDuration, intervals]  = q1_occlusion_time(75.7542667418365,0.343244724703426,0,0.817621865008387)

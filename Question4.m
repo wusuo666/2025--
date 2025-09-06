@@ -11,8 +11,8 @@ THETA_MIN = -pi; THETA_MAX = pi;     % theta ∈ [-pi, pi]
 VM_kappa = 10;                        % 初始方位角冯米塞斯浓度
 
 % 时间约束
-T_MAX = 20;
-T_SUM_MAX = 20 * (1 - 1e-6);         % 总时间上限（防数值卡边）
+T_MAX = 67;
+T_SUM_MAX = 67 * (1 - 1e-6);         % 总时间上限（防数值卡边）
 
 % 目标函数仿真选项
 sim_opts = struct('tSimEnd', 20, 'g', 9.8);
@@ -22,15 +22,16 @@ v_cloud   = 3;                       % 云团垂直坠落速度
 r_cloud   = 10;                      % 云团半径
 r_target  = 7;                       % 目标半径
 h_target  = 10;                      % 目标高度
-pos_target = [0, 200, 0];
+pos_target = [0, 200, 5];
+pos_fake = [0,0,0];
 pos_M1     = [20000, 0, 2000];
 v_M       = 300;                     % 导弹速度
-vv_M1     = v_M * (pos_target - pos_M1) / norm(pos_target - pos_M1);
+vv_M1     = v_M * (pos_fake - pos_M1) / norm(pos_fake - pos_M1);
 
 % 三架无人机初始位置（请按实际题面调整）
 pos_FY1    = [17800, 0, 1800];
-pos_FY2    = [17600, -500, 1800];
-pos_FY3    = [18000,  600, 1800];
+pos_FY2    = [12000, 1400, 1400];
+pos_FY3    = [6000,  -3000, 700];
 
 %% 奖赏机制参数（退火）
 REWARD_MAX_ITER_FRAC = 0.5;         % 前50%迭代使用明显奖励
@@ -43,8 +44,8 @@ nVar = 12;
 VarMin = [SPEED_MIN, THETA_MIN, 0, 0,  SPEED_MIN, THETA_MIN, 0, 0,  SPEED_MIN, THETA_MIN, 0, 0];
 VarMax = [SPEED_MAX, THETA_MAX, T_MAX, T_MAX,  SPEED_MAX, THETA_MAX, T_MAX, T_MAX,  SPEED_MAX, THETA_MAX, T_MAX, T_MAX];
 
-nPop = 120;              % 群体规模
-MaxIt = 60;             % 最大迭代次数
+nPop = 150;              % 群体规模
+MaxIt = 50;             % 最大迭代次数
 w = 1.2;                % 惯性权重
 wDamp = 0.99;            % 惯性权重衰减
 c1 = 1.6;                % 个体学习因子
@@ -66,26 +67,59 @@ empty_particle.Velocity = [];
 empty_particle.Cost     = [];
 empty_particle.Duration = [];
 empty_particle.Reward   = 0;
+empty_particle.CloudDurations = [];
 empty_particle.Best = empty_particle;
 
 % 初始化群体
 particle  = repmat(empty_particle, nPop, 1);
 GlobalBest.Cost = inf; GlobalBest.Duration = -inf; GlobalBest.Reward = -inf; GlobalBest.Position = [];
+GlobalBest.CloudDurations = [];
 
 for i = 1:nPop
     particle(i).Position = VarMin + rand(1, nVar) .* (VarMax - VarMin);
-    % 三个无人机的theta围绕其指向目标的方位角采样
-    target_theta_1 = atan2(pos_target(2)-pos_FY1(2), pos_target(1)-pos_FY1(1));
-    target_theta_2 = atan2(pos_target(2)-pos_FY2(2), pos_target(1)-pos_FY2(1));
-    target_theta_3 = atan2(pos_target(2)-pos_FY3(2), pos_target(1)-pos_FY3(1));
-    particle(i).Position(2)  = wrapToPi(target_theta_1 + randVonMises(0, VM_kappa, 1));
-    particle(i).Position(6)  = wrapToPi(target_theta_2 + randVonMises(0, VM_kappa, 1));
-    particle(i).Position(10) = wrapToPi(target_theta_3 + randVonMises(0, VM_kappa, 1));
+
+
+
+
+    % FY1的方位角：使用冯米塞斯分布指向真实目标
+    if rand < 0.5
+        mu_sample = 0;
+    else
+        mu_sample = pi;
+    end
+    particle(i).Position(2) = randVonMises(mu_sample, VM_kappa, 1);             % theta ∈ [-pi,pi]
+
+    % FY2的方位角：指向导弹和目标连线中点，k=2.5
+    midpoint = (pos_M1 + pos_target) / 2;  % 导弹和目标连线的中点
+    midpoint_direction = midpoint - pos_FY2;
+    midpoint_theta = atan2(midpoint_direction(2), midpoint_direction(1));
+    particle(i).Position(6) = randVonMises(midpoint_theta, 2.5, 1);  % k=2.5
+
+    % FY3的方位角：单边冯米塞斯分布，k=5
+    target_direction_FY3 = pos_target - pos_FY3;
+    target_theta_FY3 = atan2(target_direction_FY3(2), target_direction_FY3(1));
+
+    % 生成标准冯米塞斯分布的样本
+    theta_raw = randVonMises(0, 5, 1);  % 中心在0
+    % 取绝对值使其变成单边分布
+    theta_abs = abs(theta_raw);
+    % 添加到目标方向
+    particle(i).Position(10) = wrapToPi(target_theta_FY3 + theta_abs);
 
     particle(i).Velocity = zeros(1, nVar);
-    [J, dur, rew] = obj(particle(i).Position, 1);
-    particle(i).Cost = J; particle(i).Duration = dur; particle(i).Reward = rew;
-    particle(i).Best = particle(i);
+
+    [J, dur, rew, cloud_durs] = obj(particle(i).Position, 1);
+    particle(i).Cost = J; 
+    particle(i).Duration = dur; 
+    particle(i).Reward = rew;
+    particle(i).CloudDurations = cloud_durs;
+
+    particle(i).Best.Position = particle(i).Position;
+    particle(i).Best.Cost = J;
+    particle(i).Best.Duration = dur;
+    particle(i).Best.Reward = rew;
+    particle(i).Best.CloudDurations = cloud_durs;
+
     if particle(i).Best.Cost < GlobalBest.Cost
         GlobalBest = particle(i).Best;
     end
@@ -113,10 +147,11 @@ for it = 1:MaxIt
         particle(i).Position([2,6,10]) = arrayfun(@wrapToPi, particle(i).Position([2,6,10]));
 
         % 重新评估
-        [J, dur, rew] = obj(particle(i).Position, it);
+        [J, dur, rew, cloud_durs] = obj(particle(i).Position, it);
         particle(i).Cost = J; 
         particle(i).Duration = dur; 
         particle(i).Reward = rew;
+        particle(i).CloudDurations = cloud_durs;
 
         % 个体最优
         if J < particle(i).Best.Cost
@@ -167,15 +202,17 @@ for it = 1:MaxIt
             pos = min(max(pos, VarMin), VarMax);
             particle(j).Position = pos;
             particle(j).Velocity = zeros(1, nVar);
-            [Jr, durR, rewardR] = obj(particle(j).Position, it);
+            [Jr, durR, rewardR, cloud_dursR] = obj(particle(j).Position, it);
             particle(j).Cost = Jr; 
             particle(j).Duration = durR; 
             particle(j).Reward = rewardR;
+            particle(j).CloudDurations = cloud_dursR;
 
             particle(j).Best.Position = particle(j).Position;
             particle(j).Best.Cost = Jr;
             particle(j).Best.Duration = durR;
             particle(j).Best.Reward = rewardR;
+            particle(j).Best.CloudDurations = cloud_dursR;
         end
         stallCounter = 0;
     end
@@ -199,8 +236,41 @@ fprintf('  FY3: s=%.3f, th=%.3f, t=%.3f, dt=%.3f\n', s3, th3, t3, dt3);
 totalDuration = GlobalBest.Duration;
 fprintf('\n  最优遮挡总时长 = %.6f s\n', totalDuration);
 
+% 输出各个云团的遮挡贡献
+if ~isempty(GlobalBest.CloudDurations)
+    fprintf('\n各云团的遮挡贡献：\n');
+    fprintf('  云团1遮挡时长: %.2f秒\n', GlobalBest.CloudDurations(1));
+    fprintf('  云团2遮挡时长: %.2f秒\n', GlobalBest.CloudDurations(2));
+    fprintf('  云团3遮挡时长: %.2f秒\n', GlobalBest.CloudDurations(3));
+end
+
+% 根据最优解计算云团位置
+xbest = GlobalBest.Position;
+s1_best=xbest(1); th1_best=xbest(2); t1_best=xbest(3); dt1_best=xbest(4);
+s2_best=xbest(5); th2_best=xbest(6); t2_best=xbest(7); dt2_best=xbest(8);
+s3_best=xbest(9); th3_best=xbest(10); t3_best=xbest(11); dt3_best=xbest(12);
+
+vv1_best = [s1_best*cos(th1_best), s1_best*sin(th1_best), 0];
+vv2_best = [s2_best*cos(th2_best), s2_best*sin(th2_best), 0];
+vv3_best = [s3_best*cos(th3_best), s3_best*sin(th3_best), 0];
+
+% 计算三枚云团的爆炸中心（各自引爆瞬间）
+pos_throw_1 = pos_FY1 + t1_best * vv1_best; 
+pos_bao_1 = pos_throw_1 + dt1_best * vv1_best; 
+pos_bao_1(3) = pos_bao_1(3) - 0.5 * sim_opts.g * (dt1_best^2);
+
+pos_throw_2 = pos_FY2 + t2_best * vv2_best; 
+pos_bao_2 = pos_throw_2 + dt2_best * vv2_best; 
+pos_bao_2(3) = pos_bao_2(3) - 0.5 * sim_opts.g * (dt2_best^2);
+
+pos_throw_3 = pos_FY3 + t3_best * vv3_best; 
+pos_bao_3 = pos_throw_3 + dt3_best * vv3_best; 
+pos_bao_3(3) = pos_bao_3(3) - 0.5 * sim_opts.g * (dt3_best^2);
+
+
+s=73.655, th=2.999, t=0.000, dt=2.361
 %% 子函数：目标函数
-function [J, duration, reward] = objective_q4(x, sim_opts, ...
+function [J, duration, reward, cloud_durations] = objective_q4(x, sim_opts, ...
     v_cloud, r_cloud, r_target, h_target, pos_target, pos_M1, vv_M1, ...
     pos_FY1, pos_FY2, pos_FY3, ...
     reward_frac, reward_init, dist_scale, it, MaxIt)
@@ -218,36 +288,73 @@ function [J, duration, reward] = objective_q4(x, sim_opts, ...
     pos_throw_2 = pos_FY2 + t2 * vv2; pos_bao_2 = pos_throw_2 + dt2 * vv2; pos_bao_2(3) = pos_bao_2(3) - 0.5 * sim_opts.g * (dt2^2);
     pos_throw_3 = pos_FY3 + t3 * vv3; pos_bao_3 = pos_throw_3 + dt3 * vv3; pos_bao_3(3) = pos_bao_3(3) - 0.5 * sim_opts.g * (dt3^2);
 
-    % 构造全局时间轴多云团遮挡
-    spheres = struct('startTime', {}, 'center0', {}, 'vel', {}, 'radius', {});
-    spheres(1).startTime = t1+dt1; spheres(1).center0 = pos_bao_1; spheres(1).vel = [0,0,-v_cloud]; spheres(1).radius = r_cloud;
-    spheres(2).startTime = t2+dt2; spheres(2).center0 = pos_bao_2; spheres(2).vel = [0,0,-v_cloud]; spheres(2).radius = r_cloud;
-    spheres(3).startTime = t3+dt3; spheres(3).center0 = pos_bao_3; spheres(3).vel = [0,0,-v_cloud]; spheres(3).radius = r_cloud;
-
-    [duration, cloud_intervals] = compute_occlusion_multi(0, sim_opts.tSimEnd, ...
-        pos_M1, vv_M1, pos_target, r_target, h_target, spheres);
-
-    % 可以计算每个云团的有效遮挡时长
+    % 计算全局遮挡区间与总时长 - 使用q1_occlusion_time_flex
+    opts = struct('tSimEnd', sim_opts.tSimEnd, 'g', sim_opts.g, ...
+                 'target_pos', pos_target, 'r_target', r_target, 'h_target', h_target, ...
+                 'v_cloud', v_cloud, 'r_cloud', r_cloud);
+    
+    % 计算每个云团的遮挡区间（全局时间轴）
     cloud_durations = zeros(1, 3);
+    cloud_intervals = cell(1, 3);
+    
+    % 云团1
+    [cloud_durations(1), intervals1] = q1_occlusion_time_flex(vv1(1), vv1(2), t1, dt1, pos_M1, pos_FY1, opts);
+    if ~isempty(intervals1)
+        % 将相对时间转为全局时间（相对爆炸时刻 -> 全局时间轴）
+        cloud_intervals{1} = intervals1 + (t1 + dt1);
+    else
+        cloud_intervals{1} = [];
+    end
+    
+    % 云团2
+    [cloud_durations(2), intervals2] = q1_occlusion_time_flex(vv2(1), vv2(2), t2, dt2, pos_M1, pos_FY2, opts);
+    if ~isempty(intervals2)
+        cloud_intervals{2} = intervals2 + (t2 + dt2);
+    else
+        cloud_intervals{2} = [];
+    end
+    
+    % 云团3
+    [cloud_durations(3), intervals3] = q1_occlusion_time_flex(vv3(1), vv3(2), t3, dt3, pos_M1, pos_FY3, opts);
+    if ~isempty(intervals3)
+        cloud_intervals{3} = intervals3 + (t3 + dt3);
+    else
+        cloud_intervals{3} = [];
+    end
+    
+    % 合并所有区间计算总遮挡时长
+    valid_intervals = [];
     for i = 1:3
-        if ~isempty(cloud_intervals{i})
-            intervals = cell2mat(cloud_intervals{i});
-            cloud_durations(i) = sum(intervals(:,2) - intervals(:,1));
+        if ~isempty(cloud_intervals{i}) && size(cloud_intervals{i}, 2) >= 2
+            valid_intervals = [valid_intervals; cloud_intervals{i}];
         end
     end
+    
+    if isempty(valid_intervals)
+        duration = 0;
+    else
+        % 合并重叠区间
+        merged_intervals = merge_time_intervals(valid_intervals);
+        duration = sum(merged_intervals(:,2) - merged_intervals(:,1));
+    end
 
-    % 输出每个云团的贡献
-    fprintf('云团1遮挡时长: %.2f秒\n', cloud_durations(1));
-    fprintf('云团2遮挡时长: %.2f秒\n', cloud_durations(2));
-    fprintf('云团3遮挡时长: %.2f秒\n', cloud_durations(3));
-    fprintf('总有效遮挡时长: %.2f秒\n', duration);
-
-    % 奖励：云团爆炸点到导弹轨迹直线的距离（越近越好）
+    % 奖励：云团爆炸点到导弹轨迹的方向一致性（使用Weibull CDF）
     d1 = point_to_line_distance(pos_bao_1, pos_M1, vv_M1);
     d2 = point_to_line_distance(pos_bao_2, pos_M1, vv_M1);
     d3 = point_to_line_distance(pos_bao_3, pos_M1, vv_M1);
-    % 使用生存函数型奖励（归一化到0~1之间）
-    reward_each = exp(-[d1, d2, d3]/dist_scale);
+
+    % 归一化距离（假设最大可能距离为1000m）
+    max_possible_dist = 100;  % 根据您的场景调整
+    normalized_d1 = d1 / max_possible_dist;
+    normalized_d2 = d2 / max_possible_dist;
+    normalized_d3 = d3 / max_possible_dist;
+
+    % 使用Weibull分布计算奖赏
+    % Weibull CDF: F(x) = 1 - exp(-(x/λ)^k)
+    % 为保持距离小时奖赏高，使用生存函数 S(x) = 1 - F(x) = exp(-(x/λ)^k)
+    lambda = 0.5;  % 尺度参数
+    k_shape = 2.5;  % 形状参数
+    reward_each = exp(-((([normalized_d1, normalized_d2, normalized_d3])/lambda).^k_shape));
     reward = mean(reward_each);
     
     % 迭代退火权重
@@ -257,62 +364,39 @@ function [J, duration, reward] = objective_q4(x, sim_opts, ...
     J = -duration - reward_weight*reward;
 end
 
-%% 子函数：多云团全局遮挡
-function [duration, cloud_intervals] = compute_occlusion_multi(tStart, tEnd, pos_M1, vv_M1, pos_target, r_target, h_target, spheres)
-    % 计算多云团遮挡总时长及各云团的遮挡区间
-    % 输出:
-    %   duration: 总遮挡时长(秒)
-    %   cloud_intervals: 元胞数组，每个元素包含一个云团的遮挡时间区间 [start, end]
 
-    % 初始化输出
-    duration = 0;
-    cloud_intervals = cell(length(spheres), 1);
+%% 子函数：合并时间区间（处理重叠）
+function merged = merge_time_intervals(intervals)
+    % 合并可能重叠的时间区间
+    % 输入: intervals - n×2的矩阵，每行为[start_time, end_time]
+    % 输出: merged - 合并后的不重叠区间
     
-    % 计算每个云团的遮挡区间
-    all_intervals = {};
-    
-    for i = 1:length(spheres)
-        sphere = spheres(i);
-        % 计算当前云团的遮挡区间
-        intervals = computeOcclusionSimple(tStart, tEnd, ...
-            pos_M1, vv_M1, pos_target, r_target, h_target, ...
-            sphere.center0, sphere.vel, sphere.radius, sphere.startTime);
-        
-        % 保存该云团的遮挡区间
-        cloud_intervals{i} = intervals;
-        
-        % 添加到所有区间列表
-        if ~isempty(intervals)
-            all_intervals = [all_intervals; intervals];
-        end
-    end
-    
-    % 合并所有区间计算总遮挡时长
-    if ~isempty(all_intervals)
-        merged_intervals = merge_intervals(vertcat(all_intervals{:}));
-        duration = sum(merged_intervals(:,2) - merged_intervals(:,1));
-    end
-end
-
-function merged = merge_intervals(intervals)
-    % 合并重叠的时间区间
     if isempty(intervals)
         merged = [];
         return;
     end
     
+    % 检查输入维度
+    if size(intervals, 2) < 2
+        merged = intervals;
+        return;
+    end
+    
     % 按开始时间排序
     [~, idx] = sort(intervals(:,1));
-    intervals = intervals(idx,:);
+    sorted_intervals = intervals(idx,:);
     
-    merged = intervals(1,:);
-    for i = 2:size(intervals, 1)
-        current = intervals(i,:);
+    % 初始化合并结果为第一个区间
+    merged = sorted_intervals(1,:);
+    
+    % 遍历并合并重叠区间
+    for i = 2:size(sorted_intervals, 1)
+        current = sorted_intervals(i,:);
         last = merged(end,:);
         
-        % 检查是否重叠
+        % 检查是否重叠 (current.start <= last.end)
         if current(1) <= last(2)
-            % 重叠，合并区间
+            % 重叠，更新结束时间为较大值
             merged(end,2) = max(last(2), current(2));
         else
             % 不重叠，添加新区间
