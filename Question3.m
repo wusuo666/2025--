@@ -19,7 +19,7 @@ MIN_INTERVAL = 1;                    % 两次投弹之间的最小时间间隔
 q1_opts = struct('tSimEnd', 20, 'g', 9.8);
 
 % 奖赏机制参数
-REWARD_MAX_ITER_FRAC = 0.5;         % 前30%的迭代使用奖赏
+REWARD_MAX_ITER_FRAC = 0.5;         % 前50%的迭代使用奖赏
 REWARD_WEIGHT_INIT = 1;           % 初始奖赏权重
 
 %% 粒子群参数与搜索边界
@@ -335,7 +335,8 @@ function [totalDuration, mergedIntervals] = calculate_total_occlusion(vx, vy, t_
     for i = 1:numBombs
         [dur, intervals] = q1_occlusion_time(vx, vy, t_throws(i), t_explodes(i), opts);
         if ~isempty(intervals)
-            allIntervals = [allIntervals; intervals];
+            offset = t_throws(i) + t_explodes(i); % 将相对引爆时刻的区间偏移到全局时间轴
+            allIntervals = [allIntervals; intervals + offset];
         end
     end
     
